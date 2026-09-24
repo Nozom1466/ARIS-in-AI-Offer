@@ -1,24 +1,19 @@
 name: Deploy GitHub Pages
 
-# Replaces the legacy branch-based Pages build (was: source = main /docs).
-# This workflow uploads docs/ as a Pages artifact and deploys via the
-# official actions/deploy-pages action. Faster and more reliable than the
-# legacy Jekyll path, especially when the docs/ tree contains many large
-# pre-rendered HTML files.
+# Build from Markdown before publishing this fork's site.
 
 on:
   push:
     branches: [main]
     paths:
       - "docs/**"
+      - "tools/**"
+      - "tests/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
-# Allow GITHUB_TOKEN to deploy to Pages.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # Only one Pages deployment at a time; cancel in-progress runs on new push.
 concurrency:
@@ -26,22 +21,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install CPU-only PyTorch
+        run: python -m pip install torch==2.14.0 --index-url https://download.pytorch.org/whl/cpu
+      - name: Check RoPE math, layouts, cache positions, and documentation
+        run: python -m unittest discover -s tests -v
+      - name: Rebuild Markdown, code viewers, and homepage
+        run: python tools/build_site.py
+      - name: Verify source and HTML consistency; report historical review status
+        run: python tools/verify_reviews.py --mode bootstrap --reproduce
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      # Enable Settings > Pages > GitHub Actions once for a new fork.
       - name: Setup Pages
         uses: actions/configure-pages@v5
-
-      - name: Upload docs/ as Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs
 
       - name: Deploy to GitHub Pages
         id: deployment

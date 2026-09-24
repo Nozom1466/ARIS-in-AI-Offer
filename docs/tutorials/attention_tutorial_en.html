@@ -7,8 +7,8 @@
 
 <meta name="generator" content="ARIS render-html (academic, v1)">
 <meta name="aris:source-path" content="docs/tutorials/attention_tutorial_en.md">
-<meta name="aris:source-sha256" content="49459d52a2bdc516d301d1195f04ce1b0188136e1d0848c8538f8d82b2035110">
-<meta name="aris:generated-at" content="2026-09-16 06:00 UTC">
+<meta name="aris:source-sha256" content="3efffab0470cb8ede8e22a37c741af717b6a208360b9c73ba1c6a8f701147176">
+<meta name="aris:generated-at" content="2026-09-24 21:19 UTC">
 
 <!-- MathJax 3 -->
 <script>
@@ -554,8 +554,8 @@ body.aris-blog .aris-focus-toggle { display: inline-block; }
 </head>
 <body class="">
 <header class="top">
-  <a href="https://easyaioffer.github.io/"><span class="l-cn">⌂ 全部教程</span><span class="l-en">⌂ All tutorials</span><small>easyaioffer.github.io</small></a>
-  <a href="https://github.com/wanshuiyin/ARIS-in-AI-Offer">⭐ Star</a>
+  <a href="https://nozom1466.github.io/ARIS-in-AI-Offer/"><span class="l-cn">⌂ 全部教程</span><span class="l-en">⌂ All tutorials</span><small>nozom1466.github.io/ARIS-in-AI-Offer</small></a>
+  <a href="https://github.com/Nozom1466/ARIS-in-AI-Offer">⭐ Star</a>
 </header>
 <div class="layout">
 
@@ -602,7 +602,9 @@ body.aris-blog .aris-focus-toggle { display: inline-block; }
 </li>
 <li><a href="#8-position-encoding-rope--alibi--absolute">§8 Position Encoding (RoPE / ALiBi / Absolute)</a>
 <ul>
-<li><a href="#81-attention-sink-advanced-topic">8.1　Attention Sink (advanced topic)</a></li>
+<li><a href="#81-rope-remember-the-coordinate-pairs-first">8.1 RoPE: remember the coordinate pairs first</a></li>
+<li><a href="#82-a-short-rope-implementation">8.2 A short RoPE implementation</a></li>
+<li><a href="#83-attention-sink-advanced-topic">8.3 Attention Sink (advanced topic)</a></li>
 </ul>
 </li>
 <li><a href="#9-attention-in-diffusion-mandatory-if-you-mention-generative-work">§9 Attention in Diffusion (mandatory if you mention generative work)</a>
@@ -633,8 +635,8 @@ body.aris-blog .aris-focus-toggle { display: inline-block; }
   
   <div class="meta">
     <span><strong>Source:</strong> <code>docs/tutorials/attention_tutorial_en.md</code></span>
-    <span><strong>SHA256:</strong> <code>49459d52a2bd</code></span>
-    <span><strong>Rendered:</strong> 2026-09-16 06:00 UTC</span>
+    <span><strong>SHA256:</strong> <code>3efffab0470c</code></span>
+    <span><strong>Rendered:</strong> 2026-09-24 21:19 UTC</span>
     
   </div>
 </header>
@@ -833,7 +835,50 @@ out, _ = mha(x, x, x, mask=pmask)</code></pre>
 <div class="callout callout-info"><div class="callout-title">FlashAttention v1/v2/v3 key differences</div><p>v1 (2022): online softmax + block tiling + recompute. v2 (2023): swap the inner/outer loops (Q-outer, KV-inner) + better warp-level parallelism + fewer non-matmul FLOPs. v3 (2024): targets H100 Hopper with WGMMA / TMA / FP8 + asynchronous pipeline. Interviews usually focus on v1/v2 and online-softmax details.</p></div>
 <h2 id="8-position-encoding-rope--alibi--absolute">§8 Position Encoding (RoPE / ALiBi / Absolute)</h2>
 <div class="table-wrap"><table><thead><tr><th>Method</th><th>Principle</th><th>Extrapolation</th><th>Used in</th></tr></thead><tbody><tr><td><strong>Sinusoidal absolute</strong></td><td>Fixed sin/cos position vector added to the input embedding</td><td>Position encoding itself can be defined for any length, but the model may not generalize past trained lengths</td><td>Original Transformer (Vaswani 2017)</td></tr><tr><td><strong>Learned absolute</strong></td><td>Treat position as a token and learn an embedding table</td><td>Poor (the table is fixed-size, a hard limit)</td><td>BERT, GPT-2</td></tr><tr><td><strong>RoPE</strong> (Rotary)</td><td>Apply position-dependent rotation to $Q, K$: $q_m \to q_m e^{im\theta}$ (complex-number view) — <strong>the position-dependent term enters via relative shift $m-n$ in the inner product</strong> (content vectors still influence scores)</td><td>Medium (naturally captures relative position; out-of-length needs NTK-aware / YaRN)</td><td>LLaMA-1/2/3, Mistral, Qwen</td></tr><tr><td><strong>ALiBi</strong></td><td>Add a positional-distance bias to scores: $\text{score}_{ij} - m \cdot \lvert i-j \rvert$</td><td>Good (linear bias extrapolates naturally)</td><td>BLOOM, MPT</td></tr></tbody></table></div>
-<h3 id="81-attention-sink-advanced-topic">8.1　Attention Sink (advanced topic)</h3>
+<h3 id="81-rope-remember-the-coordinate-pairs-first">8.1 RoPE: remember the coordinate pairs first</h3>
+<p>Apply RoPE <strong>after projecting and splitting Q/K into heads, before computing attention scores</strong>. Standard RoPE leaves V unchanged. The input below is <code>[B, H, L, d]</code>, where the per-head dimension <code>d</code> must be even.</p>
+<p>Remember a two-coordinate rotation: <strong>subtract in the first output, add in the second</strong>.</p>
+<p>$$ a' = a\cos\phi - b\sin\phi,\qquad b' = a\sin\phi + b\cos\phi. $$</p>
+<p>At position $m$, pair $j$ uses angle $\phi_{m,j}=m\cdot\mathrm{base}^{-2j/d}$. Each pair has its own frequency. <code>base=10000</code> is an illustrative default; use the checkpoint configuration when loading a model.</p>
+<p>The two layouts differ in <strong>which coordinates form a pair and how they are reassembled</strong>:</p>
+<div class="table-wrap"><table><thead><tr><th>Layout</th><th>Paired indices for <code>d=8</code></th><th>Separate</th><th>Reassemble</th></tr></thead><tbody><tr><td>Adjacent pairs (interleaved)</td><td><code>(0,1), (2,3), (4,5), (6,7)</code></td><td><code>x[..., 0::2]</code> and <code>x[..., 1::2]</code></td><td><code>stack(..., dim=-1).flatten(-2)</code></td></tr><tr><td>First-half / second-half pairs (split-half)</td><td><code>(0,4), (1,5), (2,6), (3,7)</code></td><td><code>x.chunk(2, dim=-1)</code></td><td><code>cat(..., dim=-1)</code></td></tr></tbody></table></div>
+<p><strong>Adjacent: slices + stack. Split-half: chunk + cat. Both: subtract first, add second.</strong> Indices are zero-based.</p>
+<h3 id="82-a-short-rope-implementation">8.2 A short RoPE implementation</h3>
+<p>The shared helper produces <code>[L, d/2]</code> angles, broadcast over batch and heads. Angles and rotation use FP32; outputs return to the input dtype. This basic example assumes shared, consecutive positions across the batch; it does not implement position scaling or per-example <code>position_ids</code>.</p>
+<pre data-collapse="open"><code class="language-python">import torch
+
+
+def rope_angles(x, start_pos=0, base=10000.0):
+    L, d = x.shape[-2:]
+    assert d &gt; 0 and d % 2 == 0
+    freq = base ** (-torch.arange(0, d, 2, device=x.device, dtype=torch.float32) / d)
+    pos = torch.arange(start_pos, start_pos + L, device=x.device, dtype=torch.float32)
+    angle = pos[:, None] * freq[None, :]  # [L, d/2]; broadcasts over B and H
+    return angle.cos(), angle.sin()
+
+
+def rope_interleaved(x, start_pos=0, base=10000.0):
+    cos, sin = rope_angles(x, start_pos, base)
+    a, b = x.float()[..., 0::2], x.float()[..., 1::2]
+    out = torch.stack((a * cos - b * sin, a * sin + b * cos), dim=-1)
+    return out.flatten(-2).to(x.dtype)
+
+
+def rope_split_half(x, start_pos=0, base=10000.0):
+    cos, sin = rope_angles(x, start_pos, base)
+    a, b = x.float().chunk(2, dim=-1)
+    out = torch.cat((a * cos - b * sin, a * sin + b * cos), dim=-1)
+    return out.to(x.dtype)</code></pre>
+<p>In the earlier MHA implementation, insert these two lines after splitting heads and before <code>Q @ K.transpose(-1, -2)</code>. Use the same layout and frequencies for Q and K:</p>
+<pre><code class="language-python">Q = rope_interleaved(Q)  # [B, H, L, d]
+K = rope_interleaved(K)
+# V stays unchanged; then compute scores, mask, softmax, and weights @ V.</code></pre>
+<p><strong>Do not switch layouts on unchanged checkpoint weights.</strong> Reordering adjacent coordinates <code>[a0,b0,a1,b1,...]</code> into split-half coordinates <code>[a0,a1,...,b0,b1,...]</code> makes the rotations equivalent. Apply the same permutation to both Q and K; for checkpoint conversion, this corresponds to reordering Q/K projection output channels within each head. Meta's original complex-number Llama implementation pairs adjacent coordinates; Hugging Face Llama's <code>rotate_half</code> pairs the two halves, with corresponding layout handling during conversion.</p>
+<p>The form <code>x * cos + rotate(x) * sin</code> expresses the same rotation. To expand angles to <code>d</code> coordinates, the adjacent version uses <code>repeat_interleave(2, dim=-1)</code> while the split-half version uses <code>cat((angle, angle), dim=-1)</code>. The implementations above keep <code>d/2</code> angles, so no angle duplication is needed.</p>
+<p>With a KV cache containing <code>P</code> tokens, rotate new Q/K with <code>start_pos=P</code>, then append the rotated new K. Do not rotate cached K again. For padding or different position numbering across examples, construct angles from the appropriate <code>position_ids</code> rather than one shared offset.</p>
+<p>Runnable source: <a href="../code/rope.py.html">rope.py</a>. From the repository root, run <code>python docs/tutorials/code/rope.py</code>; run the numerical checks with <code>python -m unittest discover -s tests -p &#x27;test_rope.py&#x27;</code>.</p>
+<p>Reference implementations: <a href="https://github.com/meta-llama/llama/blob/main/llama/model.py">Meta Llama</a>, <a href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py">Hugging Face Llama</a>.</p>
+<h3 id="83-attention-sink-advanced-topic">8.3 Attention Sink (advanced topic)</h3>
 <p>In trained LLMs, attention at decode time concentrates abnormally on the first 1-4 tokens (especially [BOS] / the first token), even when those tokens are content-irrelevant. This phenomenon is called <strong>attention sink</strong>. <strong>A common intuitive explanation</strong>: softmax forces weights to sum to 1, so when a query doesn't really want to attend to anything, it needs a "junk slot" to absorb probability mass; and because early tokens are visible to all subsequent tokens, training naturally produces a global sink. StreamingLLM (Xiao et al., ICLR 2024) exploits this for long-sequence inference (keep the attention sink + a sliding window).</p>
 <h2 id="9-attention-in-diffusion-mandatory-if-you-mention-generative-work">§9 Attention in Diffusion (mandatory if you mention generative work)</h2>
 <p>For candidates with a diffusion background, interviewers almost always ask about attention in generative models.</p>
@@ -1024,16 +1069,16 @@ All checks passed.</code></pre>
 <p>Code passed independent reviewer static check + PyTorch sanity-check run, diff vs <code>nn.MultiheadAttention</code> &lt; 1e-5.</p>
 <hr />
 <h2 id="runnable-code">📜 Runnable Code</h2>
-<p>Minimal runnable PyTorch implementations of this tutorial's core concepts live in <a href="https://github.com/wanshuiyin/ARIS-in-AI-Offer/blob/main/docs/tutorials/code/README.md"><code>docs/tutorials/code/</code></a>:</p>
-<ul><li><a href="../code/mha.py.html"><code>mha.py</code></a> — standard Multi-Head Self-Attention + causal mask + numerical parity check against <code>nn.MultiheadAttention</code></li><li><a href="../code/axial_attention.py.html"><code>axial_attention.py</code></a> — H/W factorized axial attention + complexity comparison table + receptive-field isolation test</li></ul>
-<p>Each script runs on CPU in seconds with built-in <code>assert</code> sanity checks. Full overview in <a href="https://github.com/wanshuiyin/ARIS-in-AI-Offer/blob/main/docs/tutorials/code/README.md"><code>code/README.md</code></a>.</p>
+<p>Minimal runnable PyTorch implementations of this tutorial's core concepts live in <a href="https://github.com/Nozom1466/ARIS-in-AI-Offer/blob/main/docs/tutorials/code/README.md"><code>docs/tutorials/code/</code></a>:</p>
+<ul><li><a href="../code/mha.py.html"><code>mha.py</code></a> — standard Multi-Head Self-Attention + causal mask + numerical parity check against <code>nn.MultiheadAttention</code></li><li><a href="../code/rope.py.html"><code>rope.py</code></a> — §8 interleaved / split-half RoPE, with layout-equivalence, position-zero, and norm checks</li><li><a href="../code/axial_attention.py.html"><code>axial_attention.py</code></a> — H/W factorized axial attention + complexity comparison table + receptive-field isolation test</li></ul>
+<p>Each script runs on CPU in seconds with built-in <code>assert</code> sanity checks. Full overview in <a href="https://github.com/Nozom1466/ARIS-in-AI-Offer/blob/main/docs/tutorials/code/README.md"><code>code/README.md</code></a>.</p>
 
 <footer class="aris-footer">
-  <a href="https://wanshuiyin.github.io/ARIS-in-AI-Offer/">ARIS in AI Offer</a> · <a href="https://github.com/wanshuiyin/ARIS-in-AI-Offer"><span class="l-cn">⭐ 点个 Star</span><span class="l-en">⭐ Star on GitHub</span></a><br>
+  <a href="https://nozom1466.github.io/ARIS-in-AI-Offer/">ARIS in AI Offer</a> · <a href="https://github.com/Nozom1466/ARIS-in-AI-Offer"><span class="l-cn">⭐ 点个 Star</span><span class="l-en">⭐ Star on GitHub</span></a><br>
   Generated by <a href="https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep/blob/main/skills/render-html/SKILL.md">ARIS <code>/render-html</code></a> ·
   source path <code>docs/tutorials/attention_tutorial_en.md</code> ·
-  SHA256 <code>49459d52a2bd</code> ·
-  generated at 2026-09-16 06:00 UTC.
+  SHA256 <code>3efffab0470c</code> ·
+  generated at 2026-09-24 21:19 UTC.
   This is a generated view — edit the source Markdown, then re-render.
 </footer>
 </main>

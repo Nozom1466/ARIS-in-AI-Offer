@@ -4,6 +4,8 @@
 
 # ARIS-in-AI-Offer (ARIS in 秋招)
 
+This study fork is published at [nozom1466.github.io/ARIS-in-AI-Offer](https://nozom1466.github.io/ARIS-in-AI-Offer/). Updates to `main` run tests, rebuild the site, and deploy automatically; see [deployment and validation](DEPLOYMENT.md). Attention §8 now includes short interleaved and split-half RoPE implementations. The upstream introduction and author attribution are preserved below.
+
 > Hoping to make your **秋招 (qiūzhāo, Chinese AI campus recruiting season)** a little easier 🌱
 >
 > 📖 **中文版 (Chinese version)**: [README_CN.md](README_CN.md)

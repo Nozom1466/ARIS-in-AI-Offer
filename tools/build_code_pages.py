@@ -68,7 +68,7 @@ footer a{{margin-right:14px}}
 <body>
 <div class="wrap">
 <header class="top">
-  <a href="{short}/">⌂ 全部教程 <small>easyaioffer.github.io</small></a>
+  <a href="../index.html">⌂ 全部教程</a>
   <a href="{repo}">⭐ Star</a>
 </header>
 
@@ -137,7 +137,7 @@ def main() -> int:
             lines="\n".join(str(i) for i in range(1, count + 1)),
             source=e(src.rstrip("\n")),
         )
-        (OUT_DIR / f"{py.name}.html").write_text(page, encoding="utf-8")
+        (OUT_DIR / f"{py.name}.html").write_text(page, encoding="utf-8", newline="\n")
         n += 1
     print(f"wrote {n} code pages -> {OUT_DIR.relative_to(ROOT)}/")
     return 0

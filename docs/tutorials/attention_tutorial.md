@@ -387,7 +387,77 @@ FlashAttention 思路（**IO-aware exact attention**，不是近似）：
 | **RoPE** (Rotary) | 对 $Q, K$ 做位置相关的旋转：$q_m \to q_m e^{im\theta}$（复数视角）——**位置相关项通过相对位移 $m-n$ 进入内积**（内容向量仍影响分数） | 中等（自然包含相对位置；长度外推需 NTK-aware / YaRN） | LLaMA-1/2/3, Mistral, Qwen |
 | **ALiBi** | 在 score 上加位置距离 bias：$\text{score}_{ij} - m \cdot \lvert i-j \rvert$ | 好（线性 bias 自然外推） | BLOOM, MPT |
 
-### 8.1　Attention Sink（高级题）
+### 8.1 RoPE：两两旋转，先记配对方式
+
+RoPE 放在 **Q/K 投影并分头之后、计算 attention scores 之前**；标准 RoPE 不旋转 V。以下约定输入为 `[B, H, L, d]`，`d` 是每个 head 的维度，必须是偶数。
+
+记住一对坐标的旋转即可：**前减后加**。
+
+$$
+a' = a\cos\phi - b\sin\phi,\qquad b' = a\sin\phi + b\cos\phi.
+$$
+
+位置为 $m$、配对编号为 $j$ 时，$\phi_{m,j}=m\cdot\mathrm{base}^{-2j/d}$。每对坐标使用一个频率；位置越靠后，旋转角度越大。`base=10000` 只是教学默认值，加载模型时应读取 checkpoint 配置。
+
+你可能见过的“交错版”和“分半版”，区别是**哪些坐标组成一对，以及如何放回原位置**：
+
+| 布局 | `d=8` 时的配对下标 | 拆开 | 放回 |
+| --- | --- | --- | --- |
+| 相邻配对（interleaved） | `(0,1), (2,3), (4,5), (6,7)` | `x[..., 0::2]` 和 `x[..., 1::2]` | `stack(..., dim=-1).flatten(-2)` |
+| 前后半段配对（split-half） | `(0,4), (1,5), (2,6), (3,7)` | `x.chunk(2, dim=-1)` | `cat(..., dim=-1)` |
+
+**相邻用切片和 stack，分半用 chunk 和 cat；两版都“前减后加”。** 下标从 0 开始。
+
+### 8.2 好记的 RoPE 实现
+
+共同部分先生成 `[L, d/2]` 的角度，自动广播到 batch 和 head。角度与旋转用 FP32 计算，最后恢复输入 dtype。这里只演示所有样本共享连续位置的基础 RoPE，不包含位置缩放或每个样本不同的 `position_ids`。
+
+```python {open}
+import torch
+
+
+def rope_angles(x, start_pos=0, base=10000.0):
+    L, d = x.shape[-2:]
+    assert d > 0 and d % 2 == 0
+    freq = base ** (-torch.arange(0, d, 2, device=x.device, dtype=torch.float32) / d)
+    pos = torch.arange(start_pos, start_pos + L, device=x.device, dtype=torch.float32)
+    angle = pos[:, None] * freq[None, :]  # [L, d/2]; broadcasts over B and H
+    return angle.cos(), angle.sin()
+
+
+def rope_interleaved(x, start_pos=0, base=10000.0):
+    cos, sin = rope_angles(x, start_pos, base)
+    a, b = x.float()[..., 0::2], x.float()[..., 1::2]
+    out = torch.stack((a * cos - b * sin, a * sin + b * cos), dim=-1)
+    return out.flatten(-2).to(x.dtype)
+
+
+def rope_split_half(x, start_pos=0, base=10000.0):
+    cos, sin = rope_angles(x, start_pos, base)
+    a, b = x.float().chunk(2, dim=-1)
+    out = torch.cat((a * cos - b * sin, a * sin + b * cos), dim=-1)
+    return out.to(x.dtype)
+```
+
+接到前面的 MHA 里，只需在分头之后、`Q @ K.transpose(-1, -2)` 之前加两行；Q/K 使用同一种布局和同一套频率：
+
+```python
+Q = rope_interleaved(Q)  # [B, H, L, d]
+K = rope_interleaved(K)
+# V stays unchanged; then compute scores, mask, softmax, and weights @ V.
+```
+
+**两种布局不能直接在同一份权重上互换。** 相邻布局 `[a0,b0,a1,b1,...]` 重排为分半布局 `[a0,a1,...,b0,b1,...]` 后，两种旋转才等价；Q/K 都要做相同的重排，加载 checkpoint 时对应的是每个 head 内 Q/K 投影输出通道的排列。Meta 原始 Llama 的复数实现采用相邻配对，Hugging Face Llama 的 `rotate_half` 采用前后半段配对，模型转换时会配套处理布局。
+
+如果读到 `x * cos + rotate(x) * sin`，它是同一公式的另一种写法：相邻版的角度需 `repeat_interleave(2, dim=-1)`，分半版需 `cat((angle, angle), dim=-1)`；两者都扩成 `d` 维，但排列不同。上面的实现保留 `d/2` 个角度，所以不需要重复角度。
+
+带 KV cache 时，已有 `P` 个 token，新 Q/K 用 `start_pos=P`，旋转新 K 后再追加到缓存；不要重新旋转缓存里的旧 K。不同样本有 padding 或不同位置编号时，应传入相应的 `position_ids` 来构造角度，不能统一使用一个偏移。
+
+可运行脚本：[rope.py](code/rope.py)。仓库根目录运行 `python docs/tutorials/code/rope.py`；完整数值检查运行 `python -m unittest discover -s tests -p 'test_rope.py'`。
+
+参考实现：[Meta Llama](https://github.com/meta-llama/llama/blob/main/llama/model.py)、[Hugging Face Llama](https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py)。
+
+### 8.3 Attention Sink（高级题）
 
 训练好的 LLM 在 decode 时，注意力会异常集中在前 1-4 个 token（特别是 [BOS] / 第一个 token），即使内容无关。这种现象叫 **attention sink**。**常见直觉解释**：softmax 强制权重和为 1，当一个 query 实际不想 attend 任何 key 时，需要一个"垃圾位"来吸收概率质量；又因为 early tokens 对所有后续 token 都可见，训练中容易自然形成全局 sink。StreamingLLM (Xiao et al., ICLR 2024) 利用这个现象做长序列推理（保留 attention sink + 滑动窗口）。
 
@@ -852,6 +922,7 @@ All checks passed.
 本 tutorial 的核心概念在 [`docs/tutorials/code/`](code/) 里有最小可跑的 PyTorch 实现：
 
 - [`mha.py`](code/mha.py) — 标准 Multi-Head Self-Attention + causal mask + 跟 `nn.MultiheadAttention` 数值对齐验证
+- [`rope.py`](code/rope.py) — §8 的相邻配对 / 前后半段配对 RoPE，含布局等价、位置零与范数检查
 - [`axial_attention.py`](code/axial_attention.py) — H/W 轴向 attention + 复杂度对比表 + 感受野隔离测试
 
 每个脚本默认 CPU 几秒跑完，自带 `assert` sanity check。完整说明见 [`code/README.md`](code/README.md)。

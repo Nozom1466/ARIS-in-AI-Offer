@@ -33,6 +33,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from site_config import REPO, SITE, SITE_LABEL
+
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 # ---------------------------------------------------------------------------
@@ -100,7 +102,7 @@ def _code_link_map(input_path: Path) -> dict[str, str]:
     if not viewers.is_dir():
         return {}
     m = {f"code/{h.name[:-5]}": f"../code/{h.name}" for h in viewers.glob("*.py.html")}
-    readme = "https://github.com/wanshuiyin/ARIS-in-AI-Offer/blob/main/docs/tutorials/code/README.md"
+    readme = f"{REPO}/blob/main/docs/tutorials/code/README.md"
     m["code/"] = m["code/README.md"] = readme
     return m
 
@@ -844,7 +846,7 @@ def _repo_relative(input_path: Path) -> str:
     surface the home directory.
     """
     try:
-        return str(input_path.relative_to(Path.cwd()))
+        return input_path.relative_to(Path.cwd()).as_posix()
     except ValueError:
         pass
     try:
@@ -859,7 +861,7 @@ def _repo_relative(input_path: Path) -> str:
         if result.returncode == 0:
             git_root = Path(result.stdout.strip())
             try:
-                return str(input_path.relative_to(git_root))
+                return input_path.relative_to(git_root).as_posix()
             except ValueError:
                 pass
     except Exception:
@@ -989,6 +991,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"warning: --papers file not found: {p}", file=sys.stderr)
 
     vars_ = {
+        "SITE_URL": html_lib.escape(SITE, quote=True),
+        "REPO_URL": html_lib.escape(REPO, quote=True),
+        "SITE_LABEL": html_lib.escape(SITE_LABEL),
         "LANG": html_lib.escape(args.lang, quote=True),
         "TITLE": html_lib.escape(title),
         "SUBTITLE_BLOCK": subtitle_block,
@@ -1019,7 +1024,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(rendered, encoding="utf-8")
+    out_path.write_text(rendered, encoding="utf-8", newline="\n")
     print(f"wrote {out_path} ({len(rendered):,} bytes, {len(toc)} TOC entries, source sha256 {source_hash[:12]}...)")
     return 0
 

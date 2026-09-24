@@ -158,9 +158,9 @@ def find_repo_root(start: Path) -> Path:
 
 
 def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    h.update(path.read_bytes())
-    return h.hexdigest()
+    # Match render_html.py: hash decoded UTF-8 text with normalized newlines.
+    # A Windows checkout may use CRLF while the renderer always reads LF text.
+    return hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
 
 
 def parse_meta(html_text: str) -> dict:
@@ -462,8 +462,8 @@ def main() -> int:
                   "(missing or unparseable) — refusing to run fail-open.", file=sys.stderr)
             return 2
         for r in records:
-            if r.status != OK:
-                continue  # seal only structurally-OK render products; EXEMPT/structural-fail skip
+            if r.status not in (OK, REVIEW_STALE):
+                continue  # stale historical reviews still require faithful current HTML
             ok, detail = reproduce_check(root / r.html, root, manifest)
             if not ok:
                 r.status = HTML_TAMPERED

@@ -4,6 +4,8 @@
 
 # ARIS-in-AI-Offer (ARIS in 秋招)
 
+本 fork 的学习站：[nozom1466.github.io/ARIS-in-AI-Offer](https://nozom1466.github.io/ARIS-in-AI-Offer/)。更新 `main` 后自动测试、构建和发布；见 [部署与校验说明](DEPLOYMENT.md)。Attention §8 已补充相邻配对与前后半段配对的 RoPE 手写实现。下方保留上游介绍与作者信息。
+
 > 希望大家秋招的时候轻松一点 🌱
 >
 > 📖 **English version (default)**: [README.md](README.md)

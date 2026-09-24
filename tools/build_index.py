@@ -16,11 +16,10 @@ import html
 import json
 from pathlib import Path
 
+from site_config import REPO, SHORT, SITE, SITE_LABEL
+
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "docs" / "index.html"
-SITE = "https://wanshuiyin.github.io/ARIS-in-AI-Offer"
-SHORT = "https://easyaioffer.github.io"  # org-level redirect to SITE; the address people type
-REPO = "https://github.com/wanshuiyin/ARIS-in-AI-Offer"
 
 # id, 中文, English, emoji
 CATEGORIES = [
@@ -39,7 +38,7 @@ CATEGORIES = [
 def T(slug, cat, cn, en, tags, q=25, code=(), tags_en=None):
     return dict(slug=slug, cat=cat, cn=cn, en=en, tags=tags, tags_en=tags_en or tags, q=q, code=list(code))
 CATALOG = [
-    T("attention_tutorial", "found", "Attention", "Attention", "MHA · fused QKV+chunk · MQA/GQA · KV cache · FlashAttention · RoPE", 25, ("mha.py", "axial_attention.py")),
+    T("attention_tutorial", "found", "Attention", "Attention", "MHA · fused QKV+chunk · MQA/GQA · KV cache · FlashAttention · RoPE", 25, ("mha.py", "axial_attention.py", "rope.py")),
     T("transformer_block_tutorial", "found", "Transformer Block", "Transformer Block", "Pre/Post-LN · 残差拓扑 · MHA/MQA/GQA/MLA · Dense FFN vs MoE · GPT-2→Llama", 30, ("transformer_block.py",), tags_en="Pre/Post-LN · residual topologies · MHA/MQA/GQA/MLA · Dense FFN vs MoE · GPT-2→Llama"),
     T("llm_evaluation_benchmarking_tutorial", "found", "LLM 评测与 Benchmark", "LLM Evaluation & Benchmarking", "pass@k 无偏估计 · LLM-as-judge · 污染检测 · Elo/Bradley-Terry", 25, ("llm_eval_metrics.py",), tags_en="unbiased pass@k · LLM-as-judge · contamination checks · Elo/Bradley-Terry"),
     T("normalization_init_tutorial", "found", "归一化 / 残差 / 初始化", "Normalization / Residual / Init", "BatchNorm/LayerNorm/RMSNorm · Pre-vs-Post-LN · DeepNorm · QK-Norm · Kaiming/Xavier · μP", 25, ("normalization.py",)),
@@ -148,8 +147,9 @@ def build() -> str:
     tpl = (ROOT / "tools" / "templates" / "index.html").read_text(encoding="utf-8")
     return (tpl.replace("{{N}}", str(n)).replace("{{NCAT}}", str(len(CATEGORIES) - 1))
                .replace("{{CHIPS}}", chips).replace("{{SECTIONS}}", "".join(sections))
-               .replace("{{SITE}}", SITE).replace("{{SHORT}}", SHORT).replace("{{REPO}}", REPO))
+               .replace("{{SITE}}", SITE).replace("{{SHORT}}", SHORT).replace("{{REPO}}", REPO)
+               .replace("{{SITE_LABEL}}", e(SITE_LABEL)))
 
 if __name__ == "__main__":
-    OUT.write_text(build(), encoding="utf-8")
+    OUT.write_text(build(), encoding="utf-8", newline="\n")
     print(f"wrote {OUT.relative_to(ROOT)} ({OUT.stat().st_size:,} bytes, {len(CATALOG)} tutorials)")

@@ -387,7 +387,77 @@ Effects:
 | **RoPE** (Rotary) | Apply position-dependent rotation to $Q, K$: $q_m \to q_m e^{im\theta}$ (complex-number view) — **the position-dependent term enters via relative shift $m-n$ in the inner product** (content vectors still influence scores) | Medium (naturally captures relative position; out-of-length needs NTK-aware / YaRN) | LLaMA-1/2/3, Mistral, Qwen |
 | **ALiBi** | Add a positional-distance bias to scores: $\text{score}_{ij} - m \cdot \lvert i-j \rvert$ | Good (linear bias extrapolates naturally) | BLOOM, MPT |
 
-### 8.1　Attention Sink (advanced topic)
+### 8.1 RoPE: remember the coordinate pairs first
+
+Apply RoPE **after projecting and splitting Q/K into heads, before computing attention scores**. Standard RoPE leaves V unchanged. The input below is `[B, H, L, d]`, where the per-head dimension `d` must be even.
+
+Remember a two-coordinate rotation: **subtract in the first output, add in the second**.
+
+$$
+a' = a\cos\phi - b\sin\phi,\qquad b' = a\sin\phi + b\cos\phi.
+$$
+
+At position $m$, pair $j$ uses angle $\phi_{m,j}=m\cdot\mathrm{base}^{-2j/d}$. Each pair has its own frequency. `base=10000` is an illustrative default; use the checkpoint configuration when loading a model.
+
+The two layouts differ in **which coordinates form a pair and how they are reassembled**:
+
+| Layout | Paired indices for `d=8` | Separate | Reassemble |
+| --- | --- | --- | --- |
+| Adjacent pairs (interleaved) | `(0,1), (2,3), (4,5), (6,7)` | `x[..., 0::2]` and `x[..., 1::2]` | `stack(..., dim=-1).flatten(-2)` |
+| First-half / second-half pairs (split-half) | `(0,4), (1,5), (2,6), (3,7)` | `x.chunk(2, dim=-1)` | `cat(..., dim=-1)` |
+
+**Adjacent: slices + stack. Split-half: chunk + cat. Both: subtract first, add second.** Indices are zero-based.
+
+### 8.2 A short RoPE implementation
+
+The shared helper produces `[L, d/2]` angles, broadcast over batch and heads. Angles and rotation use FP32; outputs return to the input dtype. This basic example assumes shared, consecutive positions across the batch; it does not implement position scaling or per-example `position_ids`.
+
+```python {open}
+import torch
+
+
+def rope_angles(x, start_pos=0, base=10000.0):
+    L, d = x.shape[-2:]
+    assert d > 0 and d % 2 == 0
+    freq = base ** (-torch.arange(0, d, 2, device=x.device, dtype=torch.float32) / d)
+    pos = torch.arange(start_pos, start_pos + L, device=x.device, dtype=torch.float32)
+    angle = pos[:, None] * freq[None, :]  # [L, d/2]; broadcasts over B and H
+    return angle.cos(), angle.sin()
+
+
+def rope_interleaved(x, start_pos=0, base=10000.0):
+    cos, sin = rope_angles(x, start_pos, base)
+    a, b = x.float()[..., 0::2], x.float()[..., 1::2]
+    out = torch.stack((a * cos - b * sin, a * sin + b * cos), dim=-1)
+    return out.flatten(-2).to(x.dtype)
+
+
+def rope_split_half(x, start_pos=0, base=10000.0):
+    cos, sin = rope_angles(x, start_pos, base)
+    a, b = x.float().chunk(2, dim=-1)
+    out = torch.cat((a * cos - b * sin, a * sin + b * cos), dim=-1)
+    return out.to(x.dtype)
+```
+
+In the earlier MHA implementation, insert these two lines after splitting heads and before `Q @ K.transpose(-1, -2)`. Use the same layout and frequencies for Q and K:
+
+```python
+Q = rope_interleaved(Q)  # [B, H, L, d]
+K = rope_interleaved(K)
+# V stays unchanged; then compute scores, mask, softmax, and weights @ V.
+```
+
+**Do not switch layouts on unchanged checkpoint weights.** Reordering adjacent coordinates `[a0,b0,a1,b1,...]` into split-half coordinates `[a0,a1,...,b0,b1,...]` makes the rotations equivalent. Apply the same permutation to both Q and K; for checkpoint conversion, this corresponds to reordering Q/K projection output channels within each head. Meta's original complex-number Llama implementation pairs adjacent coordinates; Hugging Face Llama's `rotate_half` pairs the two halves, with corresponding layout handling during conversion.
+
+The form `x * cos + rotate(x) * sin` expresses the same rotation. To expand angles to `d` coordinates, the adjacent version uses `repeat_interleave(2, dim=-1)` while the split-half version uses `cat((angle, angle), dim=-1)`. The implementations above keep `d/2` angles, so no angle duplication is needed.
+
+With a KV cache containing `P` tokens, rotate new Q/K with `start_pos=P`, then append the rotated new K. Do not rotate cached K again. For padding or different position numbering across examples, construct angles from the appropriate `position_ids` rather than one shared offset.
+
+Runnable source: [rope.py](code/rope.py). From the repository root, run `python docs/tutorials/code/rope.py`; run the numerical checks with `python -m unittest discover -s tests -p 'test_rope.py'`.
+
+Reference implementations: [Meta Llama](https://github.com/meta-llama/llama/blob/main/llama/model.py), [Hugging Face Llama](https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py).
+
+### 8.3 Attention Sink (advanced topic)
 
 In trained LLMs, attention at decode time concentrates abnormally on the first 1-4 tokens (especially [BOS] / the first token), even when those tokens are content-irrelevant. This phenomenon is called **attention sink**. **A common intuitive explanation**: softmax forces weights to sum to 1, so when a query doesn't really want to attend to anything, it needs a "junk slot" to absorb probability mass; and because early tokens are visible to all subsequent tokens, training naturally produces a global sink. StreamingLLM (Xiao et al., ICLR 2024) exploits this for long-sequence inference (keep the attention sink + a sliding window).
 
@@ -852,6 +922,7 @@ Code passed independent reviewer static check + PyTorch sanity-check run, diff v
 Minimal runnable PyTorch implementations of this tutorial's core concepts live in [`docs/tutorials/code/`](code/):
 
 - [`mha.py`](code/mha.py) — standard Multi-Head Self-Attention + causal mask + numerical parity check against `nn.MultiheadAttention`
+- [`rope.py`](code/rope.py) — §8 interleaved / split-half RoPE, with layout-equivalence, position-zero, and norm checks
 - [`axial_attention.py`](code/axial_attention.py) — H/W factorized axial attention + complexity comparison table + receptive-field isolation test
 
 Each script runs on CPU in seconds with built-in `assert` sanity checks. Full overview in [`code/README.md`](code/README.md).

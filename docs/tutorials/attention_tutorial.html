@@ -7,8 +7,8 @@
 
 <meta name="generator" content="ARIS render-html (academic, v1)">
 <meta name="aris:source-path" content="docs/tutorials/attention_tutorial.md">
-<meta name="aris:source-sha256" content="e8650ca7b3dac4fed8301ee38a559f0bc463e685b22bbe1fc04fc950d1f738c9">
-<meta name="aris:generated-at" content="2026-09-16 06:00 UTC">
+<meta name="aris:source-sha256" content="0642b625942ecff00558d3dec81daf7eb5c2a55790f57ad89193e6346210d58f">
+<meta name="aris:generated-at" content="2026-09-24 21:19 UTC">
 
 <!-- MathJax 3 -->
 <script>
@@ -554,8 +554,8 @@ body.aris-blog .aris-focus-toggle { display: inline-block; }
 </head>
 <body class="">
 <header class="top">
-  <a href="https://easyaioffer.github.io/"><span class="l-cn">⌂ 全部教程</span><span class="l-en">⌂ All tutorials</span><small>easyaioffer.github.io</small></a>
-  <a href="https://github.com/wanshuiyin/ARIS-in-AI-Offer">⭐ Star</a>
+  <a href="https://nozom1466.github.io/ARIS-in-AI-Offer/"><span class="l-cn">⌂ 全部教程</span><span class="l-en">⌂ All tutorials</span><small>nozom1466.github.io/ARIS-in-AI-Offer</small></a>
+  <a href="https://github.com/Nozom1466/ARIS-in-AI-Offer">⭐ Star</a>
 </header>
 <div class="layout">
 
@@ -602,7 +602,9 @@ body.aris-blog .aris-focus-toggle { display: inline-block; }
 </li>
 <li><a href="#8-position-encoding-rope--alibi--absolute">§8 Position Encoding (RoPE / ALiBi / Absolute)</a>
 <ul>
-<li><a href="#81-attention-sink高级题">8.1　Attention Sink（高级题）</a></li>
+<li><a href="#81-rope两两旋转先记配对方式">8.1 RoPE：两两旋转，先记配对方式</a></li>
+<li><a href="#82-好记的-rope-实现">8.2 好记的 RoPE 实现</a></li>
+<li><a href="#83-attention-sink高级题">8.3 Attention Sink（高级题）</a></li>
 </ul>
 </li>
 <li><a href="#9-attention-in-diffusiongenerative-方向必问">§9 Attention in Diffusion（generative 方向必问）</a>
@@ -633,8 +635,8 @@ body.aris-blog .aris-focus-toggle { display: inline-block; }
   
   <div class="meta">
     <span><strong>Source:</strong> <code>docs/tutorials/attention_tutorial.md</code></span>
-    <span><strong>SHA256:</strong> <code>e8650ca7b3da</code></span>
-    <span><strong>Rendered:</strong> 2026-09-16 06:00 UTC</span>
+    <span><strong>SHA256:</strong> <code>0642b625942e</code></span>
+    <span><strong>Rendered:</strong> 2026-09-24 21:19 UTC</span>
     
   </div>
 </header>
@@ -833,7 +835,50 @@ out, _ = mha(x, x, x, mask=pmask)</code></pre>
 <div class="callout callout-info"><div class="callout-title">FlashAttention v1/v2/v3 关键区别</div><p>v1 (2022)：online softmax + block tiling + recompute。v2 (2023)：换内外循环 (Q-outer, KV-inner) + 更好 warp-level parallelism + 减少非 matmul FLOPs。v3 (2024)：针对 H100 Hopper，使用 WGMMA / TMA / FP8 + asynchronous pipeline。面试一般问 v1/v2，会问到 online softmax 细节。</p></div>
 <h2 id="8-position-encoding-rope--alibi--absolute">§8 Position Encoding (RoPE / ALiBi / Absolute)</h2>
 <div class="table-wrap"><table><thead><tr><th>方法</th><th>原理</th><th>外推性</th><th>用在哪</th></tr></thead><tbody><tr><td><strong>Sinusoidal absolute</strong></td><td>固定 sin/cos 位置向量加到 input embedding</td><td>位置编码本身可定义任意长度，但模型未必学到长度外的泛化</td><td>原始 Transformer (Vaswani 2017)</td></tr><tr><td><strong>Learned absolute</strong></td><td>把位置当 token，学一个 embedding 表</td><td>差（位置 embedding 表是定长，硬限制）</td><td>BERT, GPT-2</td></tr><tr><td><strong>RoPE</strong> (Rotary)</td><td>对 $Q, K$ 做位置相关的旋转：$q_m \to q_m e^{im\theta}$（复数视角）——<strong>位置相关项通过相对位移 $m-n$ 进入内积</strong>（内容向量仍影响分数）</td><td>中等（自然包含相对位置；长度外推需 NTK-aware / YaRN）</td><td>LLaMA-1/2/3, Mistral, Qwen</td></tr><tr><td><strong>ALiBi</strong></td><td>在 score 上加位置距离 bias：$\text{score}_{ij} - m \cdot \lvert i-j \rvert$</td><td>好（线性 bias 自然外推）</td><td>BLOOM, MPT</td></tr></tbody></table></div>
-<h3 id="81-attention-sink高级题">8.1　Attention Sink（高级题）</h3>
+<h3 id="81-rope两两旋转先记配对方式">8.1 RoPE：两两旋转，先记配对方式</h3>
+<p>RoPE 放在 <strong>Q/K 投影并分头之后、计算 attention scores 之前</strong>；标准 RoPE 不旋转 V。以下约定输入为 <code>[B, H, L, d]</code>，<code>d</code> 是每个 head 的维度，必须是偶数。</p>
+<p>记住一对坐标的旋转即可：<strong>前减后加</strong>。</p>
+<p>$$ a' = a\cos\phi - b\sin\phi,\qquad b' = a\sin\phi + b\cos\phi. $$</p>
+<p>位置为 $m$、配对编号为 $j$ 时，$\phi_{m,j}=m\cdot\mathrm{base}^{-2j/d}$。每对坐标使用一个频率；位置越靠后，旋转角度越大。<code>base=10000</code> 只是教学默认值，加载模型时应读取 checkpoint 配置。</p>
+<p>你可能见过的“交错版”和“分半版”，区别是<strong>哪些坐标组成一对，以及如何放回原位置</strong>：</p>
+<div class="table-wrap"><table><thead><tr><th>布局</th><th><code>d=8</code> 时的配对下标</th><th>拆开</th><th>放回</th></tr></thead><tbody><tr><td>相邻配对（interleaved）</td><td><code>(0,1), (2,3), (4,5), (6,7)</code></td><td><code>x[..., 0::2]</code> 和 <code>x[..., 1::2]</code></td><td><code>stack(..., dim=-1).flatten(-2)</code></td></tr><tr><td>前后半段配对（split-half）</td><td><code>(0,4), (1,5), (2,6), (3,7)</code></td><td><code>x.chunk(2, dim=-1)</code></td><td><code>cat(..., dim=-1)</code></td></tr></tbody></table></div>
+<p><strong>相邻用切片和 stack，分半用 chunk 和 cat；两版都“前减后加”。</strong> 下标从 0 开始。</p>
+<h3 id="82-好记的-rope-实现">8.2 好记的 RoPE 实现</h3>
+<p>共同部分先生成 <code>[L, d/2]</code> 的角度，自动广播到 batch 和 head。角度与旋转用 FP32 计算，最后恢复输入 dtype。这里只演示所有样本共享连续位置的基础 RoPE，不包含位置缩放或每个样本不同的 <code>position_ids</code>。</p>
+<pre data-collapse="open"><code class="language-python">import torch
+
+
+def rope_angles(x, start_pos=0, base=10000.0):
+    L, d = x.shape[-2:]
+    assert d &gt; 0 and d % 2 == 0
+    freq = base ** (-torch.arange(0, d, 2, device=x.device, dtype=torch.float32) / d)
+    pos = torch.arange(start_pos, start_pos + L, device=x.device, dtype=torch.float32)
+    angle = pos[:, None] * freq[None, :]  # [L, d/2]; broadcasts over B and H
+    return angle.cos(), angle.sin()
+
+
+def rope_interleaved(x, start_pos=0, base=10000.0):
+    cos, sin = rope_angles(x, start_pos, base)
+    a, b = x.float()[..., 0::2], x.float()[..., 1::2]
+    out = torch.stack((a * cos - b * sin, a * sin + b * cos), dim=-1)
+    return out.flatten(-2).to(x.dtype)
+
+
+def rope_split_half(x, start_pos=0, base=10000.0):
+    cos, sin = rope_angles(x, start_pos, base)
+    a, b = x.float().chunk(2, dim=-1)
+    out = torch.cat((a * cos - b * sin, a * sin + b * cos), dim=-1)
+    return out.to(x.dtype)</code></pre>
+<p>接到前面的 MHA 里，只需在分头之后、<code>Q @ K.transpose(-1, -2)</code> 之前加两行；Q/K 使用同一种布局和同一套频率：</p>
+<pre><code class="language-python">Q = rope_interleaved(Q)  # [B, H, L, d]
+K = rope_interleaved(K)
+# V stays unchanged; then compute scores, mask, softmax, and weights @ V.</code></pre>
+<p><strong>两种布局不能直接在同一份权重上互换。</strong> 相邻布局 <code>[a0,b0,a1,b1,...]</code> 重排为分半布局 <code>[a0,a1,...,b0,b1,...]</code> 后，两种旋转才等价；Q/K 都要做相同的重排，加载 checkpoint 时对应的是每个 head 内 Q/K 投影输出通道的排列。Meta 原始 Llama 的复数实现采用相邻配对，Hugging Face Llama 的 <code>rotate_half</code> 采用前后半段配对，模型转换时会配套处理布局。</p>
+<p>如果读到 <code>x * cos + rotate(x) * sin</code>，它是同一公式的另一种写法：相邻版的角度需 <code>repeat_interleave(2, dim=-1)</code>，分半版需 <code>cat((angle, angle), dim=-1)</code>；两者都扩成 <code>d</code> 维，但排列不同。上面的实现保留 <code>d/2</code> 个角度，所以不需要重复角度。</p>
+<p>带 KV cache 时，已有 <code>P</code> 个 token，新 Q/K 用 <code>start_pos=P</code>，旋转新 K 后再追加到缓存；不要重新旋转缓存里的旧 K。不同样本有 padding 或不同位置编号时，应传入相应的 <code>position_ids</code> 来构造角度，不能统一使用一个偏移。</p>
+<p>可运行脚本：<a href="../code/rope.py.html">rope.py</a>。仓库根目录运行 <code>python docs/tutorials/code/rope.py</code>；完整数值检查运行 <code>python -m unittest discover -s tests -p &#x27;test_rope.py&#x27;</code>。</p>
+<p>参考实现：<a href="https://github.com/meta-llama/llama/blob/main/llama/model.py">Meta Llama</a>、<a href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py">Hugging Face Llama</a>。</p>
+<h3 id="83-attention-sink高级题">8.3 Attention Sink（高级题）</h3>
 <p>训练好的 LLM 在 decode 时，注意力会异常集中在前 1-4 个 token（特别是 [BOS] / 第一个 token），即使内容无关。这种现象叫 <strong>attention sink</strong>。<strong>常见直觉解释</strong>：softmax 强制权重和为 1，当一个 query 实际不想 attend 任何 key 时，需要一个"垃圾位"来吸收概率质量；又因为 early tokens 对所有后续 token 都可见，训练中容易自然形成全局 sink。StreamingLLM (Xiao et al., ICLR 2024) 利用这个现象做长序列推理（保留 attention sink + 滑动窗口）。</p>
 <h2 id="9-attention-in-diffusiongenerative-方向必问">§9 Attention in Diffusion（generative 方向必问）</h2>
 <p>对 diffusion 背景的候选人，几乎必问 attention 在生成模型里的用法。</p>
@@ -1024,16 +1069,16 @@ All checks passed.</code></pre>
 <p>代码经独立 reviewer 静态检查 + PyTorch 实跑 sanity check，与 <code>nn.MultiheadAttention</code> diff &lt; 1e-5。</p>
 <hr />
 <h2 id="runnable-code">📜 Runnable Code</h2>
-<p>本 tutorial 的核心概念在 <a href="https://github.com/wanshuiyin/ARIS-in-AI-Offer/blob/main/docs/tutorials/code/README.md"><code>docs/tutorials/code/</code></a> 里有最小可跑的 PyTorch 实现：</p>
-<ul><li><a href="../code/mha.py.html"><code>mha.py</code></a> — 标准 Multi-Head Self-Attention + causal mask + 跟 <code>nn.MultiheadAttention</code> 数值对齐验证</li><li><a href="../code/axial_attention.py.html"><code>axial_attention.py</code></a> — H/W 轴向 attention + 复杂度对比表 + 感受野隔离测试</li></ul>
-<p>每个脚本默认 CPU 几秒跑完，自带 <code>assert</code> sanity check。完整说明见 <a href="https://github.com/wanshuiyin/ARIS-in-AI-Offer/blob/main/docs/tutorials/code/README.md"><code>code/README.md</code></a>。</p>
+<p>本 tutorial 的核心概念在 <a href="https://github.com/Nozom1466/ARIS-in-AI-Offer/blob/main/docs/tutorials/code/README.md"><code>docs/tutorials/code/</code></a> 里有最小可跑的 PyTorch 实现：</p>
+<ul><li><a href="../code/mha.py.html"><code>mha.py</code></a> — 标准 Multi-Head Self-Attention + causal mask + 跟 <code>nn.MultiheadAttention</code> 数值对齐验证</li><li><a href="../code/rope.py.html"><code>rope.py</code></a> — §8 的相邻配对 / 前后半段配对 RoPE，含布局等价、位置零与范数检查</li><li><a href="../code/axial_attention.py.html"><code>axial_attention.py</code></a> — H/W 轴向 attention + 复杂度对比表 + 感受野隔离测试</li></ul>
+<p>每个脚本默认 CPU 几秒跑完，自带 <code>assert</code> sanity check。完整说明见 <a href="https://github.com/Nozom1466/ARIS-in-AI-Offer/blob/main/docs/tutorials/code/README.md"><code>code/README.md</code></a>。</p>
 
 <footer class="aris-footer">
-  <a href="https://wanshuiyin.github.io/ARIS-in-AI-Offer/">ARIS in AI Offer</a> · <a href="https://github.com/wanshuiyin/ARIS-in-AI-Offer"><span class="l-cn">⭐ 点个 Star</span><span class="l-en">⭐ Star on GitHub</span></a><br>
+  <a href="https://nozom1466.github.io/ARIS-in-AI-Offer/">ARIS in AI Offer</a> · <a href="https://github.com/Nozom1466/ARIS-in-AI-Offer"><span class="l-cn">⭐ 点个 Star</span><span class="l-en">⭐ Star on GitHub</span></a><br>
   Generated by <a href="https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep/blob/main/skills/render-html/SKILL.md">ARIS <code>/render-html</code></a> ·
   source path <code>docs/tutorials/attention_tutorial.md</code> ·
-  SHA256 <code>e8650ca7b3da</code> ·
-  generated at 2026-09-16 06:00 UTC.
+  SHA256 <code>0642b625942e</code> ·
+  generated at 2026-09-24 21:19 UTC.
   This is a generated view — edit the source Markdown, then re-render.
 </footer>
 </main>

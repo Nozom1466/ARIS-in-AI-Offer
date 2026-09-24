@@ -9,6 +9,7 @@
 | 脚本 | 主题 | 对应 tutorial | 耗时 (CPU) |
 |---|---|---|---|
 | `mha.py` | Multi-Head Self-Attention + causal mask + 与 `nn.MultiheadAttention` 对齐验证 | [attention_tutorial.md](../attention_tutorial.md) | <5s |
+| `rope.py` | RoPE 相邻配对 / 前后半段配对 + 布局等价、位置零与范数验证 | [attention_tutorial.md](../attention_tutorial.md) §8 | <5s |
 | `axial_attention.py` | Axial attention（H/W 拆分）+ 复杂度对比表 + 感受野验证 | [attention_tutorial.md](../attention_tutorial.md) | <5s |
 | `flow_matching.py` | Rectified Flow on 2D toy data (two moons) + Euler sampling + 轨迹可视化 | [flow_matching_tutorial.md](../flow_matching_tutorial.md) | ~30s |
 | `dit.py` | 经典单流 DiT：patchify · adaLN-Zero block · 零初始化 final layer · null class；断言 step-0 恒等 / gate 梯度非零 / γβ 梯度为 0 | [image_generation_systems_tutorial.md](../image_generation_systems_tutorial.md) | <5s |
@@ -29,9 +30,12 @@
 
 ## 运行
 
+新增 `rope.py`：相邻配对与前后半段配对的基础 RoPE，配合 Attention §8 阅读。运行 `python rope.py`；完整数值与文档一致性检查在仓库根目录运行 `python -m unittest discover -s tests -p 'test_rope.py'`。
+
 ```bash
 cd docs/tutorials/code
 python mha.py
+python rope.py
 python axial_attention.py
 python flow_matching.py          # 需要 matplotlib（可选，没装会跳过画图）
 python dit.py

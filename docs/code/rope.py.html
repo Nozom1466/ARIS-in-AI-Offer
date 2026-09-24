@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rope.py · ARIS in AI Offer</title>
+<meta name="description" content="rope.py — Minimal RoPE: adjacent pairs and split-half pairs, for [..., L, d] tensors.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-light.min.css">
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+<style>
+:root{--bg:#fdfcf7;--bg-soft:#f4f1ea;--ink:#1a1a1a;--ink-soft:#4a4a4a;--ink-muted:#6b6b6b;--primary:#1a4a8c;--border:#d6d0c0;--border-soft:#e8e3d5}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif}
+a{color:var(--primary);text-decoration:none}
+a:hover{text-decoration:underline}
+.wrap{max-width:1120px;margin:0 auto;padding:0 16px}
+header.top{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0 0}
+header.top a,.btn{display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-soft);color:var(--ink);white-space:nowrap;font-size:14px}
+header.top a:hover,.btn:hover{border-color:var(--primary);color:var(--primary);text-decoration:none}
+header.top a small{color:var(--ink-muted);font-size:12px}
+h1{font:600 22px/1.3 ui-monospace,Menlo,Consolas,monospace;margin:22px 0 6px;overflow-wrap:anywhere}
+.from{color:var(--ink-soft);margin:0 0 12px}
+.desc{color:var(--ink-soft);margin:0 0 14px;max-width:80ch}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 16px}
+.run{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;color:var(--ink-muted);align-self:center}
+.code{display:flex;border:1px solid var(--border);border-radius:8px;background:#fafaf6;overflow:hidden;margin:0 0 28px}
+.code pre{margin:0;font:12.5px/1.6 ui-monospace,Menlo,Consolas,monospace;padding:12px 0}
+.code .ln{color:var(--ink-muted);text-align:right;padding:12px 10px 12px 12px;border-right:1px solid var(--border-soft);background:var(--bg-soft);user-select:none;flex:0 0 auto}
+.code .src{flex:1;min-width:0;overflow-x:auto}
+.code .src code{display:block;padding:0 14px;background:transparent}
+footer{margin:0 0 28px;padding-top:14px;border-top:1px solid var(--border-soft);font-size:13px;color:var(--ink-muted)}
+footer a{margin-right:14px}
+@media (max-width:640px){h1{font-size:18px}.code pre{font-size:12px}}
+@media print{header.top,.actions,footer{display:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+  <a href="../index.html">⌂ 全部教程</a>
+  <a href="https://github.com/Nozom1466/ARIS-in-AI-Offer">⭐ Star</a>
+</header>
+
+<h1>rope.py</h1>
+<p class="from">配套教程：<a href="../tutorials/attention_tutorial.html">Attention</a> · <a href="../tutorials/attention_tutorial_en.html">EN</a></p>
+<p class="desc">Minimal RoPE: adjacent pairs and split-half pairs, for [..., L, d] tensors.</p>
+<div class="actions">
+  <a class="btn" href="https://github.com/Nozom1466/ARIS-in-AI-Offer/blob/main/docs/tutorials/code/rope.py">在 GitHub 查看</a>
+  <a class="btn" href="https://raw.githubusercontent.com/Nozom1466/ARIS-in-AI-Offer/main/docs/tutorials/code/rope.py">原始 .py</a>
+  <button class="btn" id="copy" type="button">复制全部</button>
+  <span class="run">python rope.py</span>
+</div>
+
+<div class="code">
+<pre class="ln">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44</pre>
+<pre class="src"><code class="language-python" id="src">&quot;&quot;&quot;Minimal RoPE: adjacent pairs and split-half pairs, for [..., L, d] tensors.
+
+Rotate Q and K after splitting attention heads; leave V unchanged.
+Use the checkpoint&#x27;s layout and base. The default base=10000 is illustrative.
+Angles and rotation are computed in FP32, then cast back to the input dtype.
+&quot;&quot;&quot;
+
+import torch
+
+
+def rope_angles(x, start_pos=0, base=10000.0):
+    L, d = x.shape[-2:]
+    assert d &gt; 0 and d % 2 == 0
+    freq = base ** (-torch.arange(0, d, 2, device=x.device, dtype=torch.float32) / d)
+    pos = torch.arange(start_pos, start_pos + L, device=x.device, dtype=torch.float32)
+    angle = pos[:, None] * freq[None, :]  # [L, d/2]; broadcasts over B and H
+    return angle.cos(), angle.sin()
+
+
+def rope_interleaved(x, start_pos=0, base=10000.0):
+    cos, sin = rope_angles(x, start_pos, base)
+    a, b = x.float()[..., 0::2], x.float()[..., 1::2]
+    out = torch.stack((a * cos - b * sin, a * sin + b * cos), dim=-1)
+    return out.flatten(-2).to(x.dtype)
+
+
+def rope_split_half(x, start_pos=0, base=10000.0):
+    cos, sin = rope_angles(x, start_pos, base)
+    a, b = x.float().chunk(2, dim=-1)
+    out = torch.cat((a * cos - b * sin, a * sin + b * cos), dim=-1)
+    return out.to(x.dtype)
+
+
+if __name__ == &quot;__main__&quot;:
+    torch.manual_seed(0)
+    x = torch.randn(2, 3, 5, 8)
+    # Reorder adjacent coordinates into the split-half layout.
+    to_half = lambda t: torch.cat((t[..., 0::2], t[..., 1::2]), dim=-1)
+    torch.testing.assert_close(to_half(rope_interleaved(x)), rope_split_half(to_half(x)))
+    for rope in (rope_interleaved, rope_split_half):
+        out = rope(x)
+        torch.testing.assert_close(out[..., 0, :], x[..., 0, :])
+        torch.testing.assert_close(out.norm(dim=-1), x.norm(dim=-1))
+    print(&quot;RoPE checks passed: layout equivalence, position zero, and norm preservation.&quot;)</code></pre>
+</div>
+
+<footer>
+  <a href="https://nozom1466.github.io/ARIS-in-AI-Offer/">ARIS in AI Offer</a>
+  <a href="https://github.com/Nozom1466/ARIS-in-AI-Offer">GitHub</a>
+  <a href="https://github.com/Nozom1466/ARIS-in-AI-Offer/blob/main/docs/tutorials/code/README.md">全部脚本说明</a>
+</footer>
+</div>
+<script>
+hljs.highlightAll();
+document.getElementById('copy').addEventListener('click', function () {
+  var b = this;
+  navigator.clipboard.writeText(document.getElementById('src').textContent).then(function () {
+    b.textContent = '已复制'; setTimeout(function () { b.textContent = '复制全部'; }, 1500);
+  });
+});
+</script>
+</body>
+</html>
